@@ -1,0 +1,7 @@
+ipython
+pandas
+pyarrow
+numpy==1.24
+pyspark
+matplotlib
+seaborn
