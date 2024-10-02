@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import pyspark.pandas as ps
 import matplotlib.pyplot as plt
-import seaborn as sns
+# import seaborn as sns
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
@@ -52,11 +52,11 @@ for i in range(len(longitude_bins)):
 
 # Create the heatmap
 plt.figure(figsize=(10, 8))
-sns.heatmap(heatmap_data, 
-            xticklabels=sorted(set(longitude_bins)), 
-            yticklabels=sorted(set(latitude_bins)), 
-            cmap='YlGnBu', 
-            cbar_kws={'label': 'Count'})
+# sns.heatmap(heatmap_data, 
+#             xticklabels=sorted(set(longitude_bins)), 
+#             yticklabels=sorted(set(latitude_bins)), 
+#             cmap='YlGnBu', 
+#             cbar_kws={'label': 'Count'})
 
 plt.title('Heatmap of GPS Locations for Cars 2 to 10354')
 plt.xlabel('Longitude')
