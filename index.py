@@ -13,7 +13,7 @@ spark = SparkSession.builder.appName("GPS Heatmap").getOrCreate()
 all_data = []
 
 # Loop through the IDs from 2 to 10354
-for car_id in range(2, 1000):
+for car_id in range(2, 3):
     file_path = f'taxi_log_2008_by_id/{car_id}.csv'  # Adjust the path as necessary
     try:
         # Load CSV data using PySpark Pandas

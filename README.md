@@ -1,16 +1,20 @@
-brew install python@3.11
+1. brew install python@3.11 : Must use python <3.11
 
-python3.11 -m ven .ven
+2. python3.11 -m venv .venv
 
-source .venv/bin/activate
+3. source .venv/bin/activate
 
-pip install -r requirements.txt
+4. pip install -r requirements.txt
 
-where python (to see the path for python 3.11 in .venv and assign to env variables)
+5. where python (to see the path for python 3.11 in .venv and assign to env variables)
 
-export PYSPARK_PYTHON=/Users/phuc.nguyen/Downloads/release/.venv/bin/python3.11
-export PYSPARK_DRIVER_PYTHON=/Users/phuc.nguyen/Downloads/release/.venv/bin/python3.11
+6. export PYSPARK_PYTHON=/Users/phuc.nguyen/Downloads/release/.venv/bin/python3.11      : remember to place your path, this is just an example
+   export PYSPARK_DRIVER_PYTHON=/Users/phuc.nguyen/Downloads/release/.venv/bin/python3.11
 
-python index.py 
+7. make sure using java 11 or below as Hadoop only supports <=11 : java -version -> if >11 please install java 11 and export JAVA_HOME = path to java 11 ,e.g  export JAVA_HOME=$(/usr/libexec/java_home -v 11) for Mac OS
+
+8. install slf4j-api-1.7.32 into venv if can't automatically installed : optinal
+
+9. python connect-kafka.py
 
 deactivate (to out of .venv)
