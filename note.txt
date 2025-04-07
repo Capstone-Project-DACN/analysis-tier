@@ -1,0 +1,9 @@
++ 13-10-2024:
+    - Linear Regression: 
+        . Need to train on real data(get from DB) -> export the model
+        . currently not suitable with the data schema
+    - GraphX:
+        . Currently have no value when no connection between vertices (e.g household IOT)
+        . If want to use GraphX, we should define a use case where households receive electricity from transformers(T1,T2...)
+          ->  create a complex network to identify overloaded or have complex connections. 
+              Once identified, we can reduce the complexity by adding additional transformers to balance the load.
