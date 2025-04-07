@@ -53,6 +53,7 @@ spark.sparkContext.setLogLevel("ERROR")
 # Define schema for the household data
 household_schema = StructType([
     StructField("household_id", StringType(), nullable=False),
+    StructField("device_id", StringType(), nullable=False),
     StructField("timestamp", TimestampType(), nullable=False),
     StructField("electricity_usage_kwh", FloatType(), nullable=False),
     StructField("voltage", IntegerType(), nullable=False),
@@ -60,10 +61,22 @@ household_schema = StructType([
     StructField("location", StructType([
         StructField("house_number", StringType(), nullable=False),
         StructField("ward", StringType(), nullable=False),
-        StructField("district", StringType(), nullable=False)
+        StructField("district", StringType(), nullable=False),
+        StructField("city", StringType(), nullable=False)
     ]), nullable=False),
     StructField("price_per_kwh", IntegerType(), nullable=False),
     StructField("total_cost", IntegerType(), nullable=False)
+])
+
+area_schema = StructType([
+    StructField("type", StringType(), nullable=False),
+    StructField("device_id", StringType(), nullable=False),
+    StructField("timestamp", TimestampType(), nullable=False),
+    StructField("ward", StringType(), nullable=False),
+    StructField("district", StringType(), nullable=False),
+    StructField("city", StringType(), nullable=False),
+    StructField("total_electricity_usage_kwh", FloatType(), nullable=False),
+    
 ])
 
 # ============= MONITORING SETUP =============
@@ -150,10 +163,12 @@ def monitor_streaming_job():
 monitor_thread = threading.Thread(target=monitor_streaming_job, daemon=True)
 monitor_thread.start()
 
+# ============= KAFKA SETUP =============
 
 # Define Kafka source parameters
 KAFKA_BROKER = os.environ.get("KAFKA_BROKER", "localhost:9092")
-KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "household_data")
+KAFKA_HOUSEHOLD_TOPIC = os.environ.get("KAFKA_HOUSEHOLD_TOPIC", "household_data")
+KAFKA_AREA_TOPIC = os.environ.get("KAFKA_HOUSEHOLD_TOPIC", "area_data")
 KAFKA_MAX_OFFSET = os.environ.get("KAFKA_MAX_OFFSET","500")
 
 # Read data from Kafka with increased batch size
@@ -177,41 +192,53 @@ household_df.printSchema()
 household_df = household_df.withColumn("year", year("timestamp")) \
                           .withColumn("month", month("timestamp")) \
                           .withColumn("electricity_usage_kwh", col("electricity_usage_kwh").cast(FloatType())) \
-                          .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm"))
+                          .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm-ss"))
 
 household_df = household_df.withColumn(
+    "bucket_name",
+    lower(
+        concat(
+            regexp_extract(col("device_id"), "household-([^-]+)-([^-]+)-([^-]+)", 1), lit("-"),
+            regexp_extract(col("device_id"), "household-([^-]+)-([^-]+)-([^-]+)", 2), lit("-"),
+            regexp_extract(col("device_id"), "household-([^-]+)-([^-]+)-([^-]+)", 3)
+        )
+    )
+)
+
+# Read area data from Kafka
+area_kafka_df = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", KAFKA_BROKER) \
+    .option("subscribe", KAFKA_AREA_TOPIC) \
+    .option("startingOffsets", "earliest") \
+    .option("maxOffsetsPerTrigger", KAFKA_MAX_OFFSET) \
+    .option("failOnDataLoss", "false") \
+    .load()
+
+# Parse the area data JSON
+ward_df = area_kafka_df.selectExpr("CAST(value AS STRING)") \
+    .select(from_json(col("value"), area_schema).alias("data")) \
+    .select("data.*")
+
+# Add formatted timestamp and create ward-based file path
+ward_df = ward_df.withColumn("year", year("timestamp")) \
+                 .withColumn("month", month("timestamp")) \
+                 .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm-ss")) \
+                 .withColumn("total_electricity_usage_kwh", col("total_electricity_usage_kwh").cast(FloatType()))
+
+# Create ward-based bucket path for storage
+ward_df = ward_df.withColumn(
     "bucket_name", 
     lower(
         concat(
-            regexp_replace(col("location.district"), " ", "-"), lit("-"),
-            regexp_replace(col("location.ward"), " ", "-"), lit("-"),
-            regexp_replace(col("location.house_number"), " ", "-"),
+            regexp_extract(col("device_id"), "area-([^-]+)-([^-]+)-([^-]+)", 1), lit("-"),
+            regexp_extract(col("device_id"), "area-([^-]+)-([^-]+)-([^-]+)", 2), 
         )
     )
 )
 
-# Group by household_id, year, and month
-ward_df = household_df.groupBy("household_id", "year", "month", "location.district", "location.ward") \
-    .agg(
-        min("electricity_usage_kwh").alias("min_electricity_usage_kwh"),
-        max("electricity_usage_kwh").alias("max_electricity_usage_kwh"),
-        avg("electricity_usage_kwh").alias("avg_electricity_usage_kwh"),
-        min("voltage").alias("min_voltage"),
-        max("voltage").alias("max_voltage"),
-        avg("voltage").alias("avg_voltage")
-    )
-    
-ward_df = ward_df.withColumn(
-    "bucket_name",
-    lower( 
-        concat(
-            regexp_replace(col("district"), " ", "-"), lit("-"),
-            regexp_replace(col("ward"), " ", "-"), lit("-"),
-            col("year"), lit("-"),
-            col("month")
-        )
-    )
-)
+
+# ============= MinIO SETUP =============
 
 s3_client = boto3.client(
     's3',
@@ -225,108 +252,26 @@ s3_client = boto3.client(
     ),
     region_name='us-east-1'
 )
-
-# Create a 'monthly', 'daily' bucket at startup
-monthly_bucket = "monthly"
-daily_bucket = "daily"
+household_bucket = "household"
+ward_bucket = "ward"
 
 try:
-    s3_client.head_bucket(Bucket=monthly_bucket)
-    log_message(f"Bucket '{monthly_bucket}' already exists")
-    s3_client.head_bucket(Bucket=daily_bucket)
-    log_message(f"Bucket '{daily_bucket}' already exists")
+    s3_client.head_bucket(Bucket=household_bucket)
+    log_message(f"Bucket '{household_bucket}' already exists")
+    s3_client.head_bucket(Bucket=ward_bucket)
+    log_message(f"Bucket '{ward_bucket}' already exists")
 except:
     try:
-        s3_client.create_bucket(Bucket=monthly_bucket)
-        log_message(f"Created bucket '{monthly_bucket}'")
-        s3_client.create_bucket(Bucket=daily_bucket)
-        log_message(f"Created bucket '{daily_bucket}'")
+        s3_client.create_bucket(Bucket=household_bucket)
+        log_message(f"Created bucket '{household_bucket}'")
+        s3_client.create_bucket(Bucket=ward_bucket)
+        log_message(f"Created bucket '{ward_bucket}'")
     except Exception as e:
         log_message(f"Error creating bucket: {e}", "ERROR")
         stats['errors']['bucket_creation'] += 1
 
 # Function to write aggregated household data to MinIO
-def write_monthly_data_to_minio(batch_df, batch_id):
-    batch_start_time = time.time()
-    batch_count = batch_df.count()
-    
-    # Update monitoring stats
-    stats['last_10_batch_sizes'].append(batch_count)
-    stats['monthly_batches_processed'] += 1
-    stats['monthly_records_processed'] += batch_count
-    stats['total_records_processed'] += batch_count
-    
-    log_message(f"Monthly Batch {batch_id}: Processing {batch_count} records")
-    
-    if batch_count == 0:
-        log_message(f"Monthly Batch {batch_id}: No data to process")
-        return
-    
-    success_count = 0
-    error_count = 0
-    # Get unique bucket names 
-    bucket_names = [row.bucket_name for row in batch_df.select("bucket_name").distinct().collect()]
-    
-    for bucket_name in bucket_names:
-        # Filter data for this bucket
-        bucket_data = batch_df.filter(col("bucket_name") == bucket_name)
-        bucket_record_count = bucket_data.count()
-        
-        # Get the year and month from the first row for the path structure
-        first_row = bucket_data.first()
-        year = str(first_row["year"])
-        month = str(first_row["month"])
-        
-        # Select columns for output, similar to original
-        output_data = bucket_data.select(
-            "min_electricity_usage_kwh",
-            "max_electricity_usage_kwh", 
-            "avg_electricity_usage_kwh",
-            "year",
-            "month"
-        )
-        
-        # Create path for the data - using original structure
-        file_path = f"s3a://{monthly_bucket}/{bucket_name}/{year}/{month}"
-        
-        try:
-            # Using CSV format instead of text for better reliability
-            output_data.write \
-                .mode("overwrite") \
-                .option("header", "true") \
-                .csv(file_path)
-                
-            log_message(f"Monthly Batch {batch_id}: Successfully wrote {bucket_record_count} records to {file_path}")
-            success_count += bucket_record_count
-        except Exception as e:
-            log_message(f"Monthly Batch {batch_id}: Error writing to {file_path}: {e}", "ERROR")
-            stats['errors']['monthly_write_error'] += 1
-            error_count += bucket_record_count
-            
-            # Try local fallback
-            try:
-                local_path = f"/tmp/household_data/{bucket_name}/{year}/{month}"
-                output_data.write \
-                    .mode("overwrite") \
-                    .option("header", "true") \
-                    .csv(local_path)
-                log_message(f"Monthly Batch {batch_id}: Wrote {bucket_record_count} records to local path: {local_path}")
-                success_count += bucket_record_count  # Count as success if local write works
-                error_count -= bucket_record_count
-            except Exception as local_err:
-                log_message(f"Monthly Batch {batch_id}: Error writing to local path: {local_err}", "ERROR")
-                stats['errors']['monthly_local_write_error'] += 1
-    
-    batch_end_time = time.time()
-    elapsed = batch_end_time - batch_start_time
-    batch_time_ms = elapsed * 1000
-    stats['monthly_processing_time_ms'] += batch_time_ms
-    stats['last_10_processing_times'].append(batch_time_ms)
-    
-    records_per_second = batch_count / elapsed if elapsed > 0 else 0
-    log_message(f"Monthly Batch {batch_id}: Completed in {elapsed:.2f} seconds ({records_per_second:.2f} records/sec)")
-    log_message(f"Monthly Batch {batch_id}: Success: {success_count}, Errors: {error_count}")
-    
+
 def write_daily_data_to_minio(batch_df, batch_id):
     """Write raw household data to MinIO using CSV format with timestamp in the filename"""
     batch_start_time = time.time()
@@ -489,13 +434,6 @@ minio_monitor_thread.start()
 log_message("Starting streaming queries...")
 
 # Start the streaming query with optimized settings
-ward_query = ward_df.writeStream \
-    .queryName("OptimizedHouseholdAggregation") \
-    .outputMode("complete") \
-    .option("checkpointLocation", "/tmp/checkpoint/ward_data") \
-    .foreachBatch(write_monthly_data_to_minio) \
-    .trigger(processingTime="10 seconds") \
-    .start()
 
 household_query = household_df.writeStream \
     .outputMode("append") \
