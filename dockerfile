@@ -17,11 +17,7 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY finish/*.py .
-COPY jars /app/jars
+RUN pip install -r requirements.txt
 
 # Create directories for logs and checkpoints
 RUN mkdir -p /app/logs /tmp/checkpoint/ward_data /tmp/checkpoint/household_data
@@ -29,6 +25,12 @@ RUN mkdir -p /app/logs /tmp/checkpoint/ward_data /tmp/checkpoint/household_data
 # Set environment variables for Spark
 ENV PYSPARK_PYTHON=/usr/local/bin/python \
     PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
+
+
+# Copy application code
+COPY finish/*.py .
+COPY jars /app/jars
+
 
 # Command to run the application
 ENTRYPOINT ["/bin/sh", "-c", "export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && echo 'JAVA_HOME is set to: '$JAVA_HOME && exec python main.py"]

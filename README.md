@@ -20,7 +20,7 @@
 
 8. install slf4j-api-1.7.32 into venv if can't automatically installed : optinal
 8.1. cd spark/electric
-9. python3.11 connect-kafka.py
+9. python3.11 finish/main.py
 
 deactivate (to out of .venv)
 

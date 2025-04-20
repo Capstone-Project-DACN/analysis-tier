@@ -2,7 +2,10 @@ import os
 import boto3
 from botocore.client import Config
 from monitoring import log_message, stats
-
+import time
+from pyspark.sql.functions import col, lit
+import json
+from io import StringIO
 # MinIO connection parameters
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "myminioadmin")
@@ -39,24 +42,172 @@ def initialize_buckets(s3_client, buckets):
     
     return True
 
-def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
-    """Generic function to write data to MinIO using CSV format
+# prepare_dataframe is now imported from kafka_handler
+
+def write_to_path(df, path, mode="overwrite"):
+    try:
+        df.write.mode(mode).json(path)
+        return True
+    except Exception as e:
+        log_message(f"Error writing to {path}: {e}", "ERROR")
+        return False
+
+
+def write_single_json_file(df, path, bucket_name):
+    """Write dataframe as a single JSON file instead of a folder
     
     Parameters:
     -----------
-    batch_df : DataFrame
-        The batch DataFrame to process
-    batch_id : str
-        Identifier for this batch
-    data_type : str
-        Type of data being processed (household or ward)
-    spark : SparkSession
-        The Spark session
-    s3_bucket : str
-        The S3 bucket name to write to
+    df : DataFrame
+        The DataFrame to write (should be very small, typically 1 row)
+    path : str
+        Full S3 path including s3a:// prefix
+    s3_client : boto3.client
+        S3 client for direct upload
+    bucket_name : str
+        S3 bucket name
+        
+    Returns:
+    --------
+    bool : Success status
     """
-    import time
+    try:
+        s3_client = get_s3_client()
+        
+        # Import required libraries
+        import json
+        from datetime import datetime, date
+        
+        # Custom JSON encoder to handle datetime objects
+        class DateTimeEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                return super(DateTimeEncoder, self).default(obj)
+        
+        # Convert DataFrame to a JSON string with custom encoder
+        if df.count() == 1:
+            # Convert single row to Python dictionary
+            row = df.first()
+            row_dict = {}
+            
+            # Process each field, handling datetime conversion explicitly
+            for field in df.schema.fields:
+                field_name = field.name
+                field_value = row[field_name]
+                
+                # Handle different types that need conversion
+                if isinstance(field_value, (datetime, date)):
+                    row_dict[field_name] = field_value.isoformat()
+                else:
+                    row_dict[field_name] = field_value
+            
+            # Convert dictionary to JSON
+            json_string = json.dumps(row_dict, cls=DateTimeEncoder)
+        else:
+            # For multiple rows, collect as JSON strings and join
+            # This uses Spark's built-in toJSON which handles datetime conversion
+            json_rows = df.toJSON().collect()
+            json_string = "[" + ",".join(json_rows) + "]"
+        
+        # Extract the key from the path
+        if path.startswith(f"s3a://{bucket_name}/"):
+            key = path[len(f"s3a://{bucket_name}/"):]
+        else:
+            raise ValueError(f"Path {path} doesn't start with expected prefix s3a://{bucket_name}/")
+        
+        # Use the S3 client to put the object
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=key,
+            Body=json_string,
+            ContentType='application/json'
+        )
+        
+        log_message(f"Successfully wrote single JSON file to {path}")
+        return True
+    except Exception as e:
+        log_message(f"Error writing single JSON file to {path}: {e}", "ERROR")
+        return False
+def write_data_at_all_levels(device_df, device_id, data_type, s3_bucket, date_val, hour_val, minute_val):
+    success_count = 0
+    error_count = 0
     
+    # Get the latest record for this device, date, hour, minute combination
+    latest_record = device_df.orderBy(col("formatted_timestamp").desc()).limit(1)
+    
+    # Base path for this device
+    base_path = f"s3a://{s3_bucket}/{device_id}"
+    
+    # Format paths (only JSON format)
+    minute_path = f"{base_path}/{date_val}/{hour_val}/{minute_val}.json"
+    hour_path = f"{base_path}/{date_val}/{hour_val}.json"
+    day_path = f"{base_path}/{date_val}.json"
+    
+    # Write at minute level
+    if write_single_json_file(latest_record, minute_path, s3_bucket):
+        success_count += 1
+    else:
+        error_count += 1
+    
+    # Write at hour level
+    if write_single_json_file(latest_record, hour_path, s3_bucket):
+        success_count += 1
+    else:
+        error_count += 1
+    
+    # Write at day level
+    if write_single_json_file(latest_record, day_path, s3_bucket):
+        success_count += 1
+    else:
+        error_count += 1
+    
+    return success_count, error_count
+
+def process_device_data(device_df, device_id, data_type, s3_bucket):
+   
+    success_count = 0
+    error_count = 0
+    
+    # Get unique dates for this device
+    date_groups = device_df.select("date_part").distinct()
+    
+    for date_row in date_groups.collect():
+        date_val = date_row["date_part"]
+        
+        # Filter records for this date
+        date_records = device_df.filter(col("date_part") == lit(date_val))
+        
+        # Get unique hours for this date
+        hour_groups = date_records.select("hour").distinct()
+        
+        for hour_row in hour_groups.collect():
+            hour_val = hour_row["hour"]
+            
+            # Filter records for this hour
+            hour_records = date_records.filter(col("hour") == lit(hour_val))
+            
+            # Get unique minutes for this hour
+            minute_groups = hour_records.select("minute").distinct()
+            
+            for minute_row in minute_groups.collect():
+                minute_val = minute_row["minute"]
+                
+                # Filter records for this minute
+                minute_records = hour_records.filter(col("minute") == lit(minute_val))
+                
+                # Write data at all levels (minute, hour, day)
+                s_count, e_count = write_data_at_all_levels(
+                    minute_records, device_id, data_type, s3_bucket,
+                    date_val, hour_val, minute_val
+                )
+                
+                success_count += s_count
+                error_count += e_count
+    
+    return success_count, error_count
+
+def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
     batch_start_time = time.time()
     batch_count = batch_df.count()
     
@@ -66,7 +217,7 @@ def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
     if data_type == 'household':
         stats['household_batches_processed'] += 1
         stats['household_records_processed'] += batch_count
-    else:  # ward
+    else:  # area
         stats['ward_batches_processed'] += 1
         stats['ward_records_processed'] += batch_count
         
@@ -81,55 +232,20 @@ def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
     success_count = 0
     error_count = 0
     
-    # Loop through each row in the batch
-    for row in batch_df.collect():
-        # Extract common values
-        bucket_name = row["bucket_name"]
-        formatted_ts = row["formatted_timestamp"].replace(":", "-").replace(" ", "-")
+    
+    # Group by device_id
+    device_groups = batch_df.select("device_id").distinct()
+    
+    for device_row in device_groups.collect():
+        device_id = device_row["device_id"]
         
-        # Create file path for this record
-        file_path = f"s3a://{s3_bucket}/{bucket_name}/{formatted_ts}"
+        # Filter for this device
+        device_records = batch_df.filter(col("device_id") == lit(device_id))
         
-        try:
-            # Create a record dataframe based on the data type
-            if data_type == 'household':
-                # Extract household-specific values
-                household_id = row["household_id"]
-                electricity_usage = row["electricity_usage_kwh"]
-                voltage = row["voltage"]
-                current = row["current"]
-                
-                # Create household-specific record dataframe
-                data = [(household_id, electricity_usage, voltage, current, formatted_ts)]
-                columns = ["household_id", "electricity_usage_kwh", "voltage", "current", 
-                           "formatted_timestamp"]
-            
-            else:  # ward
-                # Extract ward-specific values
-                device_id = row["device_id"]
-                type_val = row["type"]
-                total_usage = row["total_electricity_usage_kwh"]
-                
-                # Create ward-specific record dataframe
-                data = [(device_id, type_val, total_usage, formatted_ts)]
-                columns = ["device_id", "type", "total_electricity_usage_kwh", "formatted_timestamp"]
-            
-            # Create the dataframe
-            record_df = spark.createDataFrame(data, columns)
-            
-            # Write this record
-            record_df.write \
-                .mode("append") \
-                .option("header", "true") \
-                .csv(file_path)
-            
-            success_count += 1
-        
-        except Exception as e:
-            id_value = household_id if data_type == 'household' else device_id
-            log_message(f"Error writing {data_type} record {id_value} to {file_path}: {e}", "ERROR")
-            stats['errors'][f'{data_type}_write_error'] += 1
-            error_count += 1
+        # Process this device's data
+        s_count, e_count = process_device_data(device_records, device_id, data_type, s3_bucket)
+        success_count += s_count
+        error_count += e_count
     
     # Track performance metrics
     batch_end_time = time.time()
@@ -138,7 +254,7 @@ def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
     
     if data_type == 'household':
         stats['household_processing_time_ms'] += batch_time_ms
-    else:  # ward
+    else:  # area
         stats['ward_processing_time_ms'] += batch_time_ms
         
     stats['last_10_processing_times'].append(batch_time_ms)

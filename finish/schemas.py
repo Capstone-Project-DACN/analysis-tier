@@ -2,6 +2,7 @@ from pyspark.sql.types import StructType, StructField, StringType, FloatType, In
 
 # Define schema for the household data
 household_schema = StructType([
+    StructField("type", StringType(), nullable=False),
     StructField("household_id", StringType(), nullable=False),
     StructField("device_id", StringType(), nullable=False),
     StructField("timestamp", TimestampType(), nullable=False),

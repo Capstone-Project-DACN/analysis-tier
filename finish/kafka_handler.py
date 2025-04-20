@@ -1,5 +1,5 @@
 import os
-from pyspark.sql.functions import from_json, col, year, month, date_format, concat, lit, regexp_extract, lower
+from pyspark.sql.functions import from_json, col, year, month, date_format, concat, lit, regexp_extract, lower,hour,minute
 from pyspark.sql.types import FloatType
 
 # Kafka connection parameters
@@ -27,22 +27,16 @@ def create_household_stream(spark, schema):
     
     # Add computed columns
     household_df = household_df.withColumn("year", year("timestamp")) \
-                              .withColumn("month", month("timestamp")) \
-                              .withColumn("electricity_usage_kwh", col("electricity_usage_kwh").cast(FloatType())) \
-                              .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm-ss"))
+                                .withColumn("month", month("timestamp")) \
+                                .withColumn("hour", hour(col("timestamp"))) \
+                                .withColumn("minute", minute(col("timestamp")))\
+                                .withColumn("date_part", date_format(col("timestamp"), "yyyy-MM-dd")) \
+                                .withColumn("electricity_usage_kwh", col("electricity_usage_kwh").cast(FloatType())) \
+                                .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm-ss"))
 
     # Extract city, district, and house_number from device_id
     # Example: "household-HCMC-Q1-261" -> "hcmc-q1-261"
-    household_df = household_df.withColumn(
-        "bucket_name",
-        lower(
-            concat(
-                regexp_extract(col("device_id"), "household-([^-]+)-([^-]+)-([^-]+)", 1), lit("-"),
-                regexp_extract(col("device_id"), "household-([^-]+)-([^-]+)-([^-]+)", 2), lit("-"),
-                regexp_extract(col("device_id"), "household-([^-]+)-([^-]+)-([^-]+)", 3)
-            )
-        )
-    )
+
     
     return household_df
 
@@ -59,19 +53,22 @@ def create_ward_stream(spark, schema):
         .load()
 
     # Parse the area data JSON
-    ward_df = area_kafka_df.selectExpr("CAST(value AS STRING)") \
+    area_df = area_kafka_df.selectExpr("CAST(value AS STRING)") \
         .select(from_json(col("value"), schema).alias("data")) \
         .select("data.*")
 
     # Add formatted timestamp and create ward-based file path
-    ward_df = ward_df.withColumn("year", year("timestamp")) \
-                     .withColumn("month", month("timestamp")) \
-                     .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm-ss")) \
-                     .withColumn("total_electricity_usage_kwh", col("total_electricity_usage_kwh").cast(FloatType()))
+    area_df = area_df.withColumn("year", year("timestamp")) \
+                    .withColumn("month", month("timestamp")) \
+                    .withColumn("hour", hour(col("timestamp"))) \
+                    .withColumn("minute", minute(col("timestamp")))\
+                    .withColumn("date_part", date_format(col("timestamp"), "yyyy-MM-dd")) \
+                    .withColumn("formatted_timestamp", date_format("timestamp", "yyyy-MM-dd HH-mm-ss")) \
+                    .withColumn("total_electricity_usage_kwh", col("total_electricity_usage_kwh").cast(FloatType()))
 
     # Create ward-based bucket path for storage
     # Example: "area-HCMC-Q1" -> "hcmc-q1"
-    ward_df = ward_df.withColumn(
+    area_df = area_df.withColumn(
         "bucket_name", 
         lower(
             concat(
@@ -81,16 +78,16 @@ def create_ward_stream(spark, schema):
         )
     )
     
-    return ward_df
+    return area_df
 
-def start_streaming_queries(household_df, ward_df, processor_func, spark, buckets):
+def start_streaming_queries(household_df, area_df, processor_func, spark, buckets):
     """Start streaming queries for both household and ward data
     
     Parameters:
     -----------
     household_df : DataFrame
         Household data stream
-    ward_df : DataFrame
+    area_df : DataFrame
         Ward data stream
     processor_func : function
         The function to process each batch of data
@@ -119,7 +116,7 @@ def start_streaming_queries(household_df, ward_df, processor_func, spark, bucket
         .start()
     
     # Start the ward streaming query
-    ward_query = ward_df.writeStream \
+    ward_query = area_df.writeStream \
         .outputMode("append") \
         .option("checkpointLocation", "/tmp/checkpoint/ward_data") \
         .foreachBatch(ward_processor) \
