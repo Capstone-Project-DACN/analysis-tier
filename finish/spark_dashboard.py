@@ -3,13 +3,14 @@ import os
 import json
 import time
 import threading
+import socket
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 import glob
 from monitoring import stats, log_message
 
 # Dashboard configuration
-DASHBOARD_HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
+DASHBOARD_HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")  # Bind to all interfaces
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "4041"))
 DASHBOARD_UPDATE_INTERVAL = int(os.environ.get("DASHBOARD_UPDATE_INTERVAL", "5"))
 
@@ -39,6 +40,12 @@ def generate_dashboard_html():
     spark_ui_url = stats.get('spark_ui_url', '#')
     spark_metrics = stats.get('spark_metrics', {})
     
+    # Get system metrics
+    system_metrics = stats.get('system_metrics', {})
+    
+    # Get batch history
+    batch_history = stats.get('batch_history', {'household': [], 'ward': []})
+    
     # Create HTML content
     html = f"""<!DOCTYPE html>
 <html>
@@ -65,7 +72,22 @@ def generate_dashboard_html():
         table {{ width: 100%; border-collapse: collapse; }}
         th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }}
         th {{ background-color: #f5f5f5; }}
+        .table-container {{ max-height: 300px; overflow-y: auto; margin-top: 15px; }}
         .error-table {{ max-height: 200px; overflow-y: auto; }}
+        .progress-bar {{ 
+            height: 20px; 
+            background-color: #e0e0e0; 
+            border-radius: 10px; 
+            overflow: hidden; 
+            margin-top: 5px; 
+        }}
+        .progress-bar-fill {{ 
+            height: 100%; 
+            background-color: #4caf50; 
+            border-radius: 10px; 
+        }}
+        .progress-bar-fill.warning {{ background-color: #ff9800; }}
+        .progress-bar-fill.danger {{ background-color: #f44336; }}
     </style>
 </head>
 <body>
@@ -112,6 +134,36 @@ def generate_dashboard_html():
         </div>
         
         <div class="card">
+            <h2>System Resources</h2>
+            <div class="card-row">
+                <div class="card-col">
+                    <div class="metric metric-primary">
+                        <h3>CPU Usage</h3>
+                        <p>{system_metrics.get('cpu_percent', 0)}%</p>
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill {'danger' if system_metrics.get('cpu_percent', 0) > 80 else 'warning' if system_metrics.get('cpu_percent', 0) > 60 else ''}" style="width: {min(system_metrics.get('cpu_percent', 0), 100)}%;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-col">
+                    <div class="metric metric-primary">
+                        <h3>Memory Usage</h3>
+                        <p>{system_metrics.get('memory_usage_percent', 0)}%</p>
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill {'danger' if system_metrics.get('memory_usage_percent', 0) > 80 else 'warning' if system_metrics.get('memory_usage_percent', 0) > 60 else ''}" style="width: {min(system_metrics.get('memory_usage_percent', 0), 100)}%;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-col">
+                    <div class="metric metric-secondary">
+                        <h3>Memory Consumption</h3>
+                        <p>{system_metrics.get('memory_usage_mb', 0):.1f}MB / {system_metrics.get('memory_available_mb', 0) + system_metrics.get('memory_usage_mb', 0):.1f}MB</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
             <h2>Spark Metrics</h2>"""
     
     if spark_metrics:
@@ -138,8 +190,11 @@ def generate_dashboard_html():
                         <p>{spark_metrics.get('executor_count', 0)}</p>
                     </div>
                     <div class="metric {'metric-warning' if memory_percent > 75 else 'metric-success'}">
-                        <h3>Memory Usage</h3>
+                        <h3>Spark Memory Usage</h3>
                         <p>{memory_used_mb:.1f}MB / {memory_total_mb:.1f}MB ({memory_percent:.1f}%)</p>
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill {'danger' if memory_percent > 80 else 'warning' if memory_percent > 60 else ''}" style="width: {min(memory_percent, 100)}%;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -149,6 +204,128 @@ def generate_dashboard_html():
             <p>No Spark metrics available yet.</p>"""
     
     html += """
+        </div>
+        
+        <div class="card">
+            <h2>Batch Processing Metrics</h2>
+            <div class="card-row">
+                <div class="card-col">
+                    <h3>Household Batches</h3>"""
+    
+    # Household batch history
+    if batch_history['household']:
+        html += """
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Batch ID</th>
+                                    <th>Records</th>
+                                    <th>Time (ms)</th>
+                                    <th>Rate (rec/sec)</th>
+                                    <th>CPU Usage</th>
+                                    <th>Memory Usage</th>
+                                </tr>
+                            </thead>
+                            <tbody>"""
+        
+        # Sort batches by timestamp, newest first
+        sorted_batches = sorted(
+            list(batch_history['household']), 
+            key=lambda x: x.get('timestamp', ''), 
+            reverse=True
+        )
+        
+        for batch in sorted_batches[:10]:  # Show last 10 batches
+            # Get batch-specific resource metrics
+            batch_resources = batch.get('batch_resources', {})
+            cpu_diff = batch_resources.get('cpu_percent_diff', 'N/A')
+            if cpu_diff != 'N/A':
+                cpu_diff = f"{cpu_diff:.1f}%"
+                
+            memory_diff = batch_resources.get('memory_diff_mb', 'N/A')
+            if memory_diff != 'N/A':
+                memory_diff = f"{memory_diff:.2f}MB"
+            
+            html += f"""
+                                <tr>
+                                    <td>{batch.get('batch_id', 'N/A')}</td>
+                                    <td>{batch.get('records_count', 0):,}</td>
+                                    <td>{batch.get('processing_time_ms', 0):.1f}</td>
+                                    <td>{batch.get('processing_rate', 0):.1f}</td>
+                                    <td>{cpu_diff}</td>
+                                    <td>{memory_diff}</td>
+                                </tr>"""
+        
+        html += """
+                            </tbody>
+                        </table>
+                    </div>"""
+    else:
+        html += """
+                    <p>No household batch history available yet.</p>"""
+    
+    html += """
+                </div>
+                <div class="card-col">
+                    <h3>Ward Batches</h3>"""
+    
+    # Ward batch history
+    if batch_history['ward']:
+        html += """
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Batch ID</th>
+                                    <th>Records</th>
+                                    <th>Time (ms)</th>
+                                    <th>Rate (rec/sec)</th>
+                                    <th>CPU Usage</th>
+                                    <th>Memory Usage</th>
+                                </tr>
+                            </thead>
+                            <tbody>"""
+        
+        # Sort batches by timestamp, newest first
+        sorted_batches = sorted(
+            list(batch_history['ward']), 
+            key=lambda x: x.get('timestamp', ''), 
+            reverse=True
+        )
+        
+        for batch in sorted_batches[:10]:  # Show last 10 batches
+            # Get batch-specific resource metrics
+            batch_resources = batch.get('batch_resources', {})
+            cpu_diff = batch_resources.get('cpu_percent_diff', 'N/A')
+            if cpu_diff != 'N/A':
+                cpu_diff = f"{cpu_diff:.1f}%"
+                
+            memory_diff = batch_resources.get('memory_diff_mb', 'N/A')
+            if memory_diff != 'N/A':
+                memory_diff = f"{memory_diff:.2f}MB"
+            
+            html += f"""
+                                <tr>
+                                    <td>{batch.get('batch_id', 'N/A')}</td>
+                                    <td>{batch.get('records_count', 0):,}</td>
+                                    <td>{batch.get('processing_time_ms', 0):.1f}</td>
+                                    <td>{batch.get('processing_rate', 0):.1f}</td>
+                                    <td>{cpu_diff}</td>
+                                    <td>{memory_diff}</td>
+                                </tr>"""
+        
+        html += """
+                            </tbody>
+                        </table>
+                    </div>"""
+    else:
+        html += """
+                    <p>No ward batch history available yet.</p>"""
+    
+    html += """
+                </div>
+            </div>
         </div>
         
         <div class="card">
@@ -245,11 +422,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         log_message(f"Dashboard HTTP: {format % args}", "DEBUG")
 
 def serve_dashboard():
-    """Serve dashboard on HTTP server"""
-    server_address = (DASHBOARD_HOST, DASHBOARD_PORT)
-    httpd = HTTPServer(server_address, DashboardHandler)
-    log_message(f"Starting dashboard HTTP server on http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
-    httpd.serve_forever()
+    """Serve dashboard on HTTP server with port auto-selection"""
+    global DASHBOARD_PORT
+    max_attempts = 10
+    
+    for attempt in range(max_attempts):
+        try:
+            server_address = (DASHBOARD_HOST, DASHBOARD_PORT)
+            httpd = HTTPServer(server_address, DashboardHandler)
+            # Add socket reuse to avoid "Address already in use" errors
+            httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            log_message(f"Starting dashboard HTTP server on http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
+            httpd.serve_forever()
+        except OSError as e:
+            if e.errno == 48 or "Address already in use" in str(e):  # Address already in use
+                log_message(f"Port {DASHBOARD_PORT} is in use, trying {DASHBOARD_PORT + 1}")
+                DASHBOARD_PORT += 1
+                if attempt == max_attempts - 1:
+                    log_message(f"Failed to start dashboard after {max_attempts} attempts", "ERROR")
+                    return
+            else:
+                log_message(f"Error starting dashboard server: {e}", "ERROR")
+                return
 
 def update_dashboard():
     """Thread to periodically update dashboard HTML"""

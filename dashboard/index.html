@@ -23,14 +23,29 @@
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
         th { background-color: #f5f5f5; }
+        .table-container { max-height: 300px; overflow-y: auto; margin-top: 15px; }
         .error-table { max-height: 200px; overflow-y: auto; }
+        .progress-bar { 
+            height: 20px; 
+            background-color: #e0e0e0; 
+            border-radius: 10px; 
+            overflow: hidden; 
+            margin-top: 5px; 
+        }
+        .progress-bar-fill { 
+            height: 100%; 
+            background-color: #4caf50; 
+            border-radius: 10px; 
+        }
+        .progress-bar-fill.warning { background-color: #ff9800; }
+        .progress-bar-fill.danger { background-color: #f44336; }
     </style>
 </head>
 <body>
     <div class="dashboard">
         <div class="header">
             <h1>Spark Streaming Dashboard</h1>
-            <p>Last updated: 2025-04-20 15:23:37</p>
+            <p>Last updated: 2025-04-20 16:45:50</p>
         </div>
         
         <div class="card">
@@ -39,7 +54,7 @@
                 <div class="card-col">
                     <div class="metric metric-primary">
                         <h3>Runtime</h3>
-                        <p>0h 1m 44s</p>
+                        <p>0h 0m 43s</p>
                     </div>
                     <div class="metric metric-success">
                         <h3>Total Records</h3>
@@ -53,7 +68,7 @@
                     </div>
                     <div class="metric metric-danger">
                         <h3>Errors</h3>
-                        <p>1</p>
+                        <p>3</p>
                     </div>
                 </div>
                 <div class="card-col">
@@ -70,30 +85,52 @@
         </div>
         
         <div class="card">
-            <h2>Spark Metrics</h2>
+            <h2>System Resources</h2>
             <div class="card-row">
                 <div class="card-col">
                     <div class="metric metric-primary">
-                        <h3>Active Jobs</h3>
-                        <p>0</p>
-                    </div>
-                    <div class="metric metric-success">
-                        <h3>Completed Jobs</h3>
-                        <p>0</p>
+                        <h3>CPU Usage</h3>
+                        <p>50.0%</p>
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill " style="width: 50.0%;"></div>
+                        </div>
                     </div>
                 </div>
                 <div class="card-col">
                     <div class="metric metric-primary">
-                        <h3>Executors</h3>
-                        <p>1</p>
-                    </div>
-                    <div class="metric metric-success">
                         <h3>Memory Usage</h3>
-                        <p>0.0MB / 434.4MB (0.0%)</p>
+                        <p>80.6%</p>
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill danger" style="width: 80.6%;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-col">
+                    <div class="metric metric-secondary">
+                        <h3>Memory Consumption</h3>
+                        <p>5076.6MB / 8263.2MB</p>
                     </div>
                 </div>
             </div>
-            <a href="http://localhost:4040" target="_blank" class="spark-ui-link">Open Spark UI</a>
+        </div>
+        
+        <div class="card">
+            <h2>Spark Metrics</h2>
+            <p>No Spark metrics available yet.</p>
+        </div>
+        
+        <div class="card">
+            <h2>Batch Processing Metrics</h2>
+            <div class="card-row">
+                <div class="card-col">
+                    <h3>Household Batches</h3>
+                    <p>No household batch history available yet.</p>
+                </div>
+                <div class="card-col">
+                    <h3>Ward Batches</h3>
+                    <p>No ward batch history available yet.</p>
+                </div>
+            </div>
         </div>
         
         <div class="card">
@@ -136,7 +173,11 @@
                     </thead>
                     <tbody>
                         <tr>
-                            <td>query_execution</td>
+                            <td>bucket_creation</td>
+                            <td>2</td>
+                        </tr>
+                        <tr>
+                            <td>minio_health_check</td>
                             <td>1</td>
                         </tr>
                     </tbody>

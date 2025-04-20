@@ -8,7 +8,7 @@ from monitoring import log_message, stats
 
 # Spark UI Configuration
 SPARK_UI_HOST = os.environ.get("SPARK_UI_HOST", "localhost")
-SPARK_UI_PORT = os.environ.get("SPARK_UI_PORT", "4040")
+SPARK_UI_PORT = os.environ.get("SPARK_UI_PORT", "4044")
 SPARK_UI_URL = f"http://{SPARK_UI_HOST}:{SPARK_UI_PORT}"
 
 def check_spark_ui_availability():

@@ -8,3 +8,5 @@ seaborn
 scipy
 boto3
 requests
+psutil
+botocore

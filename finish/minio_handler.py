@@ -2,11 +2,12 @@
 import os
 import boto3
 from botocore.client import Config
-from monitoring import log_message, stats
+from monitoring import log_message, stats, start_batch_metrics, finish_batch_metrics
 import time
 from pyspark.sql.functions import col, lit
 import json
 from io import StringIO
+
 # MinIO connection parameters
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "myminioadmin")
@@ -43,8 +44,6 @@ def initialize_buckets(s3_client, buckets):
     
     return True
 
-# prepare_dataframe is now imported from kafka_handler
-
 def write_to_path(df, path, mode="overwrite"):
     try:
         df.write.mode(mode).json(path)
@@ -52,7 +51,6 @@ def write_to_path(df, path, mode="overwrite"):
     except Exception as e:
         log_message(f"Error writing to {path}: {e}", "ERROR")
         return False
-
 
 def write_single_json_file(df, path, bucket_name):
     """Write dataframe as a single JSON file instead of a folder
@@ -63,8 +61,6 @@ def write_single_json_file(df, path, bucket_name):
         The DataFrame to write (should be very small, typically 1 row)
     path : str
         Full S3 path including s3a:// prefix
-    s3_client : boto3.client
-        S3 client for direct upload
     bucket_name : str
         S3 bucket name
         
@@ -130,6 +126,7 @@ def write_single_json_file(df, path, bucket_name):
     except Exception as e:
         log_message(f"Error writing single JSON file to {path}: {e}", "ERROR")
         return False
+
 def write_data_at_all_levels(device_df, device_id, data_type, s3_bucket, date_val, hour_val, minute_val):
     success_count = 0
     error_count = 0
@@ -166,7 +163,6 @@ def write_data_at_all_levels(device_df, device_id, data_type, s3_bucket, date_va
     return success_count, error_count
 
 def process_device_data(device_df, device_id, data_type, s3_bucket):
-   
     success_count = 0
     error_count = 0
     
@@ -208,7 +204,46 @@ def process_device_data(device_df, device_id, data_type, s3_bucket):
     
     return success_count, error_count
 
+def get_executor_metrics(spark):
+    """Get executor metrics from SparkContext"""
+    try:
+        metrics = {}
+        
+        # Get executor information
+        executor_info = spark.sparkContext.statusTracker().getExecutorInfos()
+        if executor_info:
+            total_cores = sum(exec.totalCores for exec in executor_info)
+            active_tasks = sum(len(exec.activeTasks) for exec in executor_info)
+            
+            metrics['executor_count'] = len(executor_info)
+            metrics['total_cores'] = total_cores
+            metrics['active_tasks'] = active_tasks
+
+        return metrics
+    except Exception as e:
+        log_message(f"Error getting executor metrics: {e}", "ERROR")
+        return {}
+
 def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
+    """Process a batch of data and write to MinIO storage
+    
+    Parameters:
+    -----------
+    batch_df : DataFrame
+        The DataFrame containing the batch of data
+    batch_id : int
+        The batch identifier
+    data_type : str
+        The type of data ('household' or 'ward')
+    spark : SparkSession
+        The active SparkSession
+    s3_bucket : str
+        The MinIO bucket name
+    """
+    # Start tracking batch metrics
+    start_batch_metrics(data_type, batch_id)
+    
+    # Record the starting time
     batch_start_time = time.time()
     batch_count = batch_df.count()
     
@@ -226,13 +261,15 @@ def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
     
     if batch_count == 0:
         log_message(f"{data_type.capitalize()} Batch {batch_id}: No data to process")
+        # Finish batch metrics tracking with zero records
+        batch_time_ms = (time.time() - batch_start_time) * 1000
+        finish_batch_metrics(data_type, batch_id, 0, batch_time_ms, {})
         return
         
     log_message(f"{data_type.capitalize()} Batch {batch_id}: Processing {batch_count} records")
     
     success_count = 0
     error_count = 0
-    
     
     # Group by device_id
     device_groups = batch_df.select("device_id").distinct()
@@ -259,6 +296,18 @@ def write_data_to_minio(batch_df, batch_id, data_type, spark, s3_bucket):
         stats['ward_processing_time_ms'] += batch_time_ms
         
     stats['last_10_processing_times'].append(batch_time_ms)
+    
+    # Get executor metrics
+    executor_metrics = get_executor_metrics(spark)
+    
+    # Finish batch metrics tracking
+    finish_batch_metrics(
+        batch_type=data_type,
+        batch_id=batch_id,
+        records_count=batch_count,
+        processing_time_ms=batch_time_ms,
+        executor_metrics=executor_metrics
+    )
     
     # Log performance metrics
     records_per_second = batch_count / elapsed if elapsed > 0 else 0
