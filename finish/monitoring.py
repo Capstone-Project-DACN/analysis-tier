@@ -1,3 +1,4 @@
+#monitoring.py
 import time
 import os
 import threading
@@ -17,7 +18,9 @@ stats = {
     'ward_processing_time_ms': 0,
     'errors': defaultdict(int),
     'last_10_batch_sizes': deque(maxlen=10),
-    'last_10_processing_times': deque(maxlen=10)
+    'last_10_processing_times': deque(maxlen=10),
+    'spark_metrics': {},  # New field for Spark UI metrics
+    'spark_ui_url': None  # Will be populated when Spark UI is available
 }
 
 # Create monitoring log file
@@ -59,6 +62,37 @@ def monitor_streaming_job():
             # Calculate throughput
             records_per_second = total_records / (runtime if runtime > 0 else 1)
             
+            # Get Spark UI metrics if available
+            spark_metrics_display = ""
+            spark_metrics = stats.get('spark_metrics', {})
+            spark_ui_url = stats.get('spark_ui_url', 'N/A')
+            
+            if spark_metrics:
+                active_jobs = spark_metrics.get('active_jobs', 0)
+                executor_count = spark_metrics.get('executor_count', 0)
+                memory_used_mb = spark_metrics.get('memory_used', 0) / (1024 * 1024)
+                memory_total_mb = spark_metrics.get('memory_total', 0) / (1024 * 1024)
+                memory_percent = (memory_used_mb / memory_total_mb * 100) if memory_total_mb > 0 else 0
+                
+                spark_metrics_display = f"""
+                --- SPARK METRICS ---
+                Spark UI: {spark_ui_url}
+                Active Jobs: {active_jobs}
+                Completed Jobs: {spark_metrics.get('completed_jobs', 0)}
+                Failed Jobs: {spark_metrics.get('failed_jobs', 0)}
+                Executors: {executor_count}
+                Memory Usage: {memory_used_mb:.2f}MB / {memory_total_mb:.2f}MB ({memory_percent:.1f}%)
+                """
+                
+                # Add streaming metrics if available
+                if 'streaming_batches_total' in spark_metrics:
+                    spark_metrics_display += f"""
+                    Streaming Batches: {spark_metrics.get('streaming_batches_total', 0)}
+                    Avg Processing Time: {spark_metrics.get('streaming_processing_time_avg', 0):.2f}ms
+                    """
+
+            
+            
             # Construct message with only simple variables
             status = f"""
             ============= STREAMING JOB STATUS =============
@@ -66,8 +100,9 @@ def monitor_streaming_job():
             Total Records: {total_records}
             Household Records: {household_records}
             Ward Records: {ward_records}
-            Throughput: {records_per_second:.2f} records/second
+            Throughput: {records_per_second:.2f} records/second 
             Error Count: {error_count}
+            {spark_metrics_display}
             =================================================
             """
             # Use direct printing

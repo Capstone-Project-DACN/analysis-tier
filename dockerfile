@@ -31,6 +31,7 @@ ENV PYSPARK_PYTHON=/usr/local/bin/python \
 COPY finish/*.py .
 COPY jars /app/jars
 
+EXPOSE 4040 4041
 
 # Command to run the application
 ENTRYPOINT ["/bin/sh", "-c", "export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && echo 'JAVA_HOME is set to: '$JAVA_HOME && exec python main.py"]

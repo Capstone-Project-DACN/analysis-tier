@@ -1,3 +1,4 @@
+#schemas.py
 from pyspark.sql.types import StructType, StructField, StringType, FloatType, IntegerType, TimestampType
 
 # Define schema for the household data

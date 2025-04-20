@@ -1,3 +1,4 @@
+#main.py
 import os
 import time
 import atexit
@@ -8,6 +9,8 @@ from schemas import household_schema, area_schema
 from monitoring import log_message, stats, start_monitoring
 from minio_handler import get_s3_client, initialize_buckets, write_data_to_minio, get_spark_minio_config
 from kafka_handler import create_household_stream, create_ward_stream, start_streaming_queries
+from spark_ui_monitor import start_spark_ui_monitoring
+from spark_dashboard import start_dashboard
 
 def main():
     # Get absolute path to the jars directory
@@ -69,6 +72,14 @@ def main():
         s3_client=s3_client,
         buckets=buckets.values()
     )
+    
+    # Start Spark UI monitoring
+    log_message("Starting Spark UI monitoring...")
+    start_spark_ui_monitoring()
+    
+    # Start dashboard
+    log_message("Starting dashboard web interface...")
+    start_dashboard()
     
     # Register cleanup handler
     def cleanup():
