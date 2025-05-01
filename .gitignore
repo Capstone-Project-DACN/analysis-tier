@@ -4,3 +4,6 @@ converTxtToCsv.js
 taxi_log_2008_by_id
 user_guide.pdf
 index.py
+jars
+logs
+*.csv

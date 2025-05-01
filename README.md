@@ -24,4 +24,4 @@
 
 deactivate (to out of .venv)
 
-
+10. 

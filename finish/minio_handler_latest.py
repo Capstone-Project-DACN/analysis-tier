@@ -7,16 +7,11 @@ import time
 from pyspark.sql.functions import col, lit
 import json
 from io import StringIO
-import concurrent.futures
-from datetime import datetime, date
 
 # MinIO connection parameters
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "myminioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "myminioadmin")
-
-# Global thread pool executor for async operations
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=30)
 
 def get_s3_client():
     """Create and return a MinIO S3 client"""
@@ -34,6 +29,7 @@ def get_s3_client():
     )
 
 def initialize_buckets(s3_client, buckets):
+    
     """Initialize specified MinIO buckets"""
     for bucket in buckets:
         try:
@@ -57,41 +53,8 @@ def write_to_path(df, path, mode="overwrite"):
         log_message(f"Error writing to {path}: {e}", "ERROR")
         return False
 
-# Custom JSON encoder to handle datetime objects
-class DateTimeEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        return super(DateTimeEncoder, self).default(obj)
-
-def s3_put_object(bucket, key, body):
-    """Perform S3 put_object operation in a separate thread"""
-    try:
-        # Create a new S3 client (connection pooling is handled by boto3)
-        s3_client = boto3.client(
-            's3',
-            endpoint_url=MINIO_ENDPOINT,
-            aws_access_key_id=MINIO_ACCESS_KEY,
-            aws_secret_access_key=MINIO_SECRET_KEY,
-            region_name='us-east-1'
-        )
-        
-        # Put the object
-        s3_client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType='application/json'
-        )
-        log_message(f"Successfully wrote single JSON file to {bucket}/{key}")
-        return True
-    except Exception as e:
-        log_message(f"Error in background write to {bucket}/{key}: {e}", "ERROR")
-        stats['errors']['s3_put'] += 1
-        return False
-
-def write_single_json_file_nonblocking(df, path, bucket_name):
-    """Write dataframe as a single JSON file without waiting for S3 response
+def write_single_json_file(df, path, bucket_name):
+    """Write dataframe as a single JSON file instead of a folder
     
     Parameters:
     -----------
@@ -104,14 +67,21 @@ def write_single_json_file_nonblocking(df, path, bucket_name):
         
     Returns:
     --------
-    bool : Always returns True as we don't wait for completion
+    bool : Success status
     """
     try:
-        # Extract the key from the path
-        if path.startswith(f"s3a://{bucket_name}/"):
-            key = path[len(f"s3a://{bucket_name}/"):]
-        else:
-            raise ValueError(f"Path {path} doesn't start with expected prefix s3a://{bucket_name}/")
+        s3_client = get_s3_client()
+        
+        # Import required libraries
+        import json
+        from datetime import datetime, date
+        
+        # Custom JSON encoder to handle datetime objects
+        class DateTimeEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                return super(DateTimeEncoder, self).default(obj)
         
         # Convert DataFrame to a JSON string with custom encoder
         if df.count() == 1:
@@ -138,13 +108,24 @@ def write_single_json_file_nonblocking(df, path, bucket_name):
             json_rows = df.toJSON().collect()
             json_string = "[" + ",".join(json_rows) + "]"
         
-        # Submit the write operation to the thread pool and don't wait for result
-        executor.submit(s3_put_object, bucket_name, key, json_string)
+        # Extract the key from the path
+        if path.startswith(f"s3a://{bucket_name}/"):
+            key = path[len(f"s3a://{bucket_name}/"):]
+        else:
+            raise ValueError(f"Path {path} doesn't start with expected prefix s3a://{bucket_name}/")
         
+        # Use the S3 client to put the object
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=key,
+            Body=json_string,
+            ContentType='application/json'
+        )
+        
+        log_message(f"Successfully wrote single JSON file to {path}")
         return True
     except Exception as e:
-        log_message(f"Error preparing write to {path}: {e}", "ERROR")
-        stats['errors']['s3_write_prep'] = stats['errors'].get('s3_write_prep', 0) + 1
+        log_message(f"Error writing single JSON file to {path}: {e}", "ERROR")
         return False
 
 def write_data_at_all_levels(device_df, device_id, data_type, s3_bucket, date_val, hour_val, minute_val):
@@ -162,20 +143,20 @@ def write_data_at_all_levels(device_df, device_id, data_type, s3_bucket, date_va
     hour_path = f"{base_path}/{date_val}/{hour_val}.json"
     day_path = f"{base_path}/{date_val}.json"
     
-    # Write at minute level using non-blocking method
-    if write_single_json_file_nonblocking(latest_record, minute_path, s3_bucket):
+    # Write at minute level
+    if write_single_json_file(latest_record, minute_path, s3_bucket):
         success_count += 1
     else:
         error_count += 1
     
-    # Write at hour level using non-blocking method
-    if write_single_json_file_nonblocking(latest_record, hour_path, s3_bucket):
+    # Write at hour level
+    if write_single_json_file(latest_record, hour_path, s3_bucket):
         success_count += 1
     else:
         error_count += 1
     
-    # Write at day level using non-blocking method
-    if write_single_json_file_nonblocking(latest_record, day_path, s3_bucket):
+    # Write at day level
+    if write_single_json_file(latest_record, day_path, s3_bucket):
         success_count += 1
     else:
         error_count += 1
