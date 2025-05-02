@@ -1,0 +1,16 @@
+name: Trigger Common Build Workflow
+on:
+  push:
+    branches: [ main ]
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Triggering the workflow"
+      - name: Trigger repository dispatch
+        uses: peter-evans/repository-dispatch@v3
+        with:
+            token: ${{ secrets.COMMON_BUILD_REPO_TOKEN }}
+            repository: ${{ secrets.COMMON_BUILD_REPO }}
+            event-type: dependency_updated
+            client-payload: '{"triggered_by": "${{ github.repository }}, on push event", "commit_sha": "${{ github.sha }}", "branch": "${{ github.ref }}"}'
