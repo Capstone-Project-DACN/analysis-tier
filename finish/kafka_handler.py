@@ -16,9 +16,10 @@ def create_household_stream(spark, schema):
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_BROKER) \
         .option("subscribe", KAFKA_HOUSEHOLD_TOPIC) \
-        .option("startingOffsets", "earliest") \
+        .option("startingOffsets", "latest") \
         .option("maxOffsetsPerTrigger", KAFKA_MAX_OFFSET) \
         .option("failOnDataLoss", "false") \
+        .option("kafka.group.id", "analysis-tier-household") \
         .load()
 
     # Parse the JSON data
@@ -48,9 +49,10 @@ def create_ward_stream(spark, schema):
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_BROKER) \
         .option("subscribe", KAFKA_AREA_TOPIC) \
-        .option("startingOffsets", "earliest") \
+        .option("startingOffsets", "latest") \
         .option("maxOffsetsPerTrigger", KAFKA_MAX_OFFSET) \
         .option("failOnDataLoss", "false") \
+        .option("kafka.group.id", "analysis-tier-area") \
         .load()
 
     # Parse the area data JSON
